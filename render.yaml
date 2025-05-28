@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: youtube
+    name: new-instance
     env: python
     region: Oregon
     plan: free

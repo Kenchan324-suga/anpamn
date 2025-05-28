@@ -20,6 +20,7 @@ user_agents = [
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_13_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/77.0.3864.0 Safari/537.36',
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/69.0.3497.100',
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/94.0.4606.61 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/86.0.4240.198 Safari/537.36',
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.13; rv:62.0) Gecko/20100101 Firefox/62.0',
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.13; rv:67.0) Gecko/20100101 Firefox/67.0',
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.13; rv:68.0) Gecko/20100101 Firefox/68.0',
@@ -41,7 +42,7 @@ def getRandomUserAgent():
 
 class InvidiousAPI:
     def __init__(self):
-        self.all = ast.literal_eval(requests.get('https://raw.githubusercontent.com/M-14-deep/Kari/refs/heads/main/Kari.', headers=getRandomUserAgent(), timeout=(1.0, 0.5)).text)
+        self.all = ast.literal_eval(requests.get('https://github.com/Aaa97a/inv.json/raw/refs/heads/main/inv.json', headers=getRandomUserAgent(), timeout=(1.0, 0.5)).text)
         
         self.video = self.all['video']
         self.playlist = self.all['playlist']
@@ -139,44 +140,83 @@ failed = "Load Failed"
 def getVideoData(videoid):
     t = json.loads(requestAPI(f"/videos/{urllib.parse.quote(videoid)}", invidious_api.video))
 
+    # 推奨動画の情報（キー名の違いに対応）
     if 'recommendedvideo' in t:
         recommended_videos = t["recommendedvideo"]
     elif 'recommendedVideos' in t:
         recommended_videos = t["recommendedVideos"]
     else:
-        recommended_videos = {
+        recommended_videos = [{
             "videoId": failed,
             "title": failed,
             "authorId": failed,
             "author": failed,
             "lengthSeconds": 0,
             "viewCountText": "Load Failed"
-        }
+        }]
 
-    return [
+    # 【新規追加】adaptiveFormats から高画質動画と音声の URL を抽出する
+    adaptiveFormats = t.get("adaptiveFormats", [])
+    highstream_url = None
+    audio_url = None
+
+    # 高画質: container == 'webm' かつ resolution == '1080p' のストリーム
+    for stream in adaptiveFormats:
+        if stream.get("container") == "webm" and stream.get("resolution") == "1080p":
+            highstream_url = stream.get("url")
+            break
+    if not highstream_url:
+        for stream in adaptiveFormats:
+            if stream.get("container") == "webm" and stream.get("resolution") == "720p":
+                highstream_url = stream.get("url")
+                break
+
+
+    # 音声: container == 'm4a' かつ audioQuality == 'AUDIO_QUALITY_MEDIUM' のストリーム
+    for stream in adaptiveFormats:
+        if stream.get("container") == "m4a" and stream.get("audioQuality") == "AUDIO_QUALITY_MEDIUM":
+            audio_url = stream.get("url")
+            break
+
+    adaptive = t.get('adaptiveFormats', [])
+    streamUrls = [
         {
-            'video_urls': list(reversed([i["url"] for i in t["formatStreams"]]))[:2],
-            'description_html': t["descriptionHtml"].replace("\n", "<br>"),
-            'title': t["title"],
-            'length_text': str(datetime.timedelta(seconds=t["lengthSeconds"])),
-            'author_id': t["authorId"],
-            'author': t["author"],
-            'author_thumbnails_url': t["authorThumbnails"][-1]["url"],
-            'view_count': t["viewCount"],
-            'like_count': t["likeCount"],
-            'subscribers_count': t["subCountText"]
-        },
-        [
-            {
-                "video_id": i["videoId"],
-                "title": i["title"],
-                "author_id": i["authorId"],
-                "author": i["author"],
-                "length_text": str(datetime.timedelta(seconds=i["lengthSeconds"])),
-                "view_count_text": i["viewCountText"]
-            } for i in recommended_videos
-        ]
+            'url': stream['url'],
+            'resolution': stream['resolution']
+        }
+        for stream in adaptive
+        if stream.get('container') == 'webm' and stream.get('resolution')
     ]
+    return [
+      {
+        # 既存処理（ここでは formatStreams のURLを逆順にして上位2件を使用）
+        'video_urls': list(reversed([i["url"] for i in t["formatStreams"]]))[:2],
+        # 追加：高画質動画と音声のURL
+        'highstream_url': highstream_url,
+        'audio_url': audio_url,
+        'description_html': t["descriptionHtml"].replace("\n", "<br>"),
+        'title': t["title"],
+        'length_text': str(datetime.timedelta(seconds=t["lengthSeconds"])),
+        'author_id': t["authorId"],
+        'author': t["author"],
+        'author_thumbnails_url': t["authorThumbnails"][-1]["url"],
+        'view_count': t["viewCount"],
+        'like_count': t["likeCount"],
+        'subscribers_count': t["subCountText"],
+        'streamUrls': streamUrls
+    },
+
+    [
+      {
+        "video_id": i["videoId"],
+        "title": i["title"],
+        "author_id": i["authorId"],
+        "author": i["author"],
+        "length_text": str(datetime.timedelta(seconds=i["lengthSeconds"])),
+        "view_count_text": i["viewCountText"]
+    } for i in recommended_videos]
+    
+]
 
 def getSearchData(q, page):
 
@@ -294,8 +334,7 @@ def getVerifyCode():
         return None
 
 
-
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, Form
 from fastapi import Response, Cookie, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from fastapi.responses import RedirectResponse as redirect
@@ -303,7 +342,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Union
-
+from fastapi import Form
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 app.mount("/js", StaticFiles(directory="./statics/js"), name="static")
@@ -325,13 +364,14 @@ def home(response: Response, request: Request, yuki: Union[str] = Cookie(None)):
     print(checkCookie(yuki))
     return redirect("/genesis")
 
-
 @app.get('/watch', response_class=HTMLResponse)
-def video(v:str, response: Response, request: Request, yuki: Union[str] = Cookie(None), proxy: Union[str] = Cookie(None)):
-    # v: video_id
-    if not(checkCookie(yuki)):
+def video(v: str, response: Response, request: Request, yuki: Union[str, None] = Cookie(None), proxy: Union[str, None] = Cookie(None)):
+    if not (checkCookie(yuki)):
         return redirect("/")
-    response.set_cookie(key="yuki", value="True", max_age=7*24*60*60)
+    # 埋め込み再生がオンの場合は /ume にリダイレクト
+    if request.cookies.get("ume_toggle", "false") == "true":
+        return redirect(f"/ume?v={v}")
+    response.set_cookie("yuki", "True", max_age=7*24*60*60)
     video_data = getVideoData(v)
     '''
     return [
@@ -373,6 +413,160 @@ def video(v:str, response: Response, request: Request, yuki: Union[str] = Cookie
         "view_count": video_data[0]['view_count'],
         "like_count": video_data[0]['like_count'],
         "subscribers_count": video_data[0]['subscribers_count'],
+        "recommended_videos": video_data[1],
+        "proxy":proxy
+    })
+@app.get('/w', response_class=HTMLResponse)
+def video(v:str, response: Response, request: Request, yuki: Union[str] = Cookie(None), proxy: Union[str] = Cookie(None)):
+    # v: video_id
+    if not(checkCookie(yuki)):
+        return redirect("/")
+    response.set_cookie(key="yuki", value="True", max_age=7*24*60*60)
+    video_data = getVideoData(v)
+    '''
+    return [
+        {
+            'video_urls': list(reversed([i["url"] for i in t["formatStreams"]]))[:2],
+            'highstream_url': highstream_url,
+            'audio_url': audio_url,
+            'description_html': t["descriptionHtml"].replace("\n", "<br>"),
+            'title': t["title"],
+            'length_text': str(datetime.timedelta(seconds=t["lengthSeconds"]))
+            'author_id': t["authorId"],
+            'author': t["author"],
+            'author_thumbnails_url': t["authorThumbnails"][-1]["url"],
+            'view_count': t["viewCount"],
+            'like_count': t["likeCount"],
+            'subscribers_count': t["subCountText"]
+        },
+        [
+            {
+                "video_id": i["videoId"],
+                "title": i["title"],
+                "author_id": i["authorId"],
+                "author": i["author"],
+                "length_text": str(datetime.timedelta(seconds=i["lengthSeconds"])),
+                "view_count_text": i["viewCountText"]
+            } for i in recommended_videos
+        ]
+    ]
+    '''
+    response.set_cookie("yuki", "True", max_age=60 * 60 * 24 * 7)
+    return template('hiquo.html', {
+        "request": request,
+        "videoid": v,
+        "videourls": video_data[0]['video_urls'],
+        "highstream_url": video_data[0]['highstream_url'],
+        "audio_url": video_data[0]['audio_url'],
+        "description": video_data[0]['description_html'],
+        "video_title": video_data[0]['title'],
+        "author_id": video_data[0]['author_id'],
+        "author_icon": video_data[0]['author_thumbnails_url'],
+        "author": video_data[0]['author'],
+        "length_text": video_data[0]['length_text'],
+        "view_count": video_data[0]['view_count'],
+        "like_count": video_data[0]['like_count'],
+        "subscribers_count": video_data[0]['subscribers_count'],
+        "recommended_videos": video_data[1],
+        "proxy":proxy
+    })
+@app.get('/ume', response_class=HTMLResponse)
+def ume_video(v: str, response: Response, request: Request, yuki: Union[str, None] = Cookie(None), proxy: Union[str, None] = Cookie(None)):
+    if not checkCookie(yuki):
+        return redirect("/")
+    response.set_cookie("yuki", "True", max_age=7*24*60*60)
+    video_data = getVideoData(v)
+    '''
+    return [
+        {
+            'video_urls': list(reversed([i["url"] for i in t["formatStreams"]]))[:2],
+            'description_html': t["descriptionHtml"].replace("\n", "<br>"),
+            'title': t["title"],
+            'length_text': str(datetime.timedelta(seconds=t["lengthSeconds"]))
+            'author_id': t["authorId"],
+            'author': t["author"],
+            'author_thumbnails_url': t["authorThumbnails"][-1]["url"],
+            'view_count': t["viewCount"],
+            'like_count': t["likeCount"],
+            'subscribers_count': t["subCountText"]
+        },
+        [
+            {
+                "title": i["title"],
+                "author_id": i["authorId"],
+                "author": i["author"],
+                "length_text": str(datetime.timedelta(seconds=i["lengthSeconds"])),
+                "view_count_text": i["viewCountText"]
+            } for i in recommended_videos
+        ]
+    ]
+    '''
+    response.set_cookie("yuki", "True", max_age=60 * 60 * 24 * 7)
+    return template('ume.html', {
+        "request": request,
+        "videoid": v,
+        "videourls": video_data[0]['video_urls'],
+        "description": video_data[0]['description_html'],
+        "video_title": video_data[0]['title'],
+        "author_id": video_data[0]['author_id'],
+        "author_icon": video_data[0]['author_thumbnails_url'],
+        "author": video_data[0]['author'],
+        "length_text": video_data[0]['length_text'],
+        "view_count": video_data[0]['view_count'],
+        "like_count": video_data[0]['like_count'],
+        "subscribers_count": video_data[0]['subscribers_count'],
+        "recommended_videos": video_data[1],
+        "proxy":proxy
+    })
+  
+@app.get('/ww', response_class=HTMLResponse)
+def video(v:str, response: Response, request: Request, yuki: Union[str] = Cookie(None), proxy: Union[str] = Cookie(None)):
+    # v: video_id
+    if not(checkCookie(yuki)):
+        return redirect("/")
+    response.set_cookie(key="yuki", value="True", max_age=7*24*60*60)
+    video_data = getVideoData(v)
+    '''
+    return [
+        {
+            'video_urls': list(reversed([i["url"] for i in t["formatStreams"]]))[:2],
+            'description_html': t["descriptionHtml"].replace("\n", "<br>"),
+            'title': t["title"],
+            'length_text': str(datetime.timedelta(seconds=t["lengthSeconds"]))
+            'author_id': t["authorId"],
+            'author': t["author"],
+            'author_thumbnails_url': t["authorThumbnails"][-1]["url"],
+            'view_count': t["viewCount"],
+            'like_count': t["likeCount"],
+            'subscribers_count': t["subCountText"]
+            'streamUrls': streamUrls
+        },
+        [
+            {
+                "title": i["title"],
+                "author_id": i["authorId"],
+                "author": i["author"],
+                "length_text": str(datetime.timedelta(seconds=i["lengthSeconds"])),
+                "view_count_text": i["viewCountText"]
+            } for i in recommended_videos
+        ]
+    ]
+    '''
+    response.set_cookie("yuki", "True", max_age=60 * 60 * 24 * 7)
+    return template('watch.html', {
+        "request": request,
+        "videoid": v,
+        "videourls": video_data[0]['video_urls'],
+        "description": video_data[0]['description_html'],
+        "video_title": video_data[0]['title'],
+        "author_id": video_data[0]['author_id'],
+        "author_icon": video_data[0]['author_thumbnails_url'],
+        "author": video_data[0]['author'],
+        "length_text": video_data[0]['length_text'],
+        "view_count": video_data[0]['view_count'],
+        "like_count": video_data[0]['like_count'],
+        "subscribers_count": video_data[0]['subscribers_count'],
+        "streamUrls": video_data[0]['streamUrls'],
         "recommended_videos": video_data[1],
         "proxy":proxy
     })
@@ -418,9 +612,6 @@ def suggest(keyword:str):
     return [i[0] for i in json.loads(requests.get("http://www.google.com/complete/search?client=youtube&hl=ja&ds=yt&q=" + urllib.parse.quote(keyword), headers=getRandomUserAgent()).text[19:-1])[1]]
 
 
-
-
-
 @cache(seconds=120)
 def getSource(name):
     return requests.get(f'https://raw.githubusercontent.com/LunaKamituki/yuki-source/refs/heads/main/{name}.html', headers=getRandomUserAgent()).text
@@ -446,8 +637,25 @@ def write_bbs(request: Request, name: str = "", message: str = "", seed:Union[st
         return redirect("/")
     if 'Google-Apps-Script' in str(request.scope["headers"][1][1]):
         raise UnallowedBot("GASのBotは許可されていません")
-    
-    t = requests.get(f"{url}bbs/result?name={urllib.parse.quote(name)}&message={urllib.parse.quote(message)}&seed={urllib.parse.quote(seed)}&channel={urllib.parse.quote(channel)}&verify={urllib.parse.quote(verify)}&info={urllib.parse.quote(getInfo(request))}&serververify={getVerifyCode()}", cookies={"yuki":"True"}, allow_redirects=False)
+      
+    params = {
+      'name': urllib.parse.quote(name),
+      'message': urllib.parse.quote(message),
+      'seed': urllib.parse.quote(seed),
+      'channel': urllib.parse.quote(channel),
+      'verify': urllib.parse.quote(verify),
+      'info': urllib.parse.quote(getInfo(request)),
+      'serververify': getVerifyCode()
+    }
+  
+    url_querys = ''
+    for key, value in params.items():
+      url_querys += f'{key}={value}&'
+
+    if url_querys != '':
+      url_querys = '?' + url_querys[:-1]
+      
+    t = requests.get(f"{url}bbs/result" + url_querys, cookies={"yuki": "True"}, allow_redirects=False)
     if t.status_code != 307:
         return HTMLResponse(no_robot_meta_tag + t.text.replace('AutoLink(xhr.responseText);', 'urlConvertToLink(xhr.responseText);') + getSource('bbs'))
         
@@ -476,7 +684,7 @@ def viewlist(response: Response, request: Request, yuki: Union[str] = Cookie(Non
 @app.get("/reset", response_class=PlainTextResponse)
 def home():
     global url, invidious_api
-    url = requests.get('https://raw.githubusercontent.com/mochidukiyukimi/yuki-youtube-instance/refs/heads/main/instance.txt', headers=getRandomUserAgent()).text.rstrip()
+    url = requests.get('https://raw.githubusercontent.com/yuto1106110/yuto-yuki-youtube-1/main/APItati', headers=getRandomUserAgent()).text.rstrip()
     invidious_api = InvidiousAPI()
     return 'Success'
 
@@ -516,7 +724,6 @@ def displayAPI(api_name: str):
         
   return str(api_value)
     
-
 @app.get("/api/{api_name}/next", response_class=PlainTextResponse)
 def rotateAPI(api_name: str):
   match api_name:
@@ -549,11 +756,114 @@ def toggleVideoCheck():
     global invidious_api
     invidious_api.check_video = not invidious_api.check_video
     return f'{not invidious_api.check_video} to {invidious_api.check_video}'
+  
+@app.get("/proxy", response_class=HTMLResponse)
+def list_page(response: Response, request: Request):
+    return template("proxy.html", {"request": request})
+      
+@app.get("/rammer", response_class=HTMLResponse)
+def list_page(response: Response, request: Request):
+    return template("rammerhead.html", {"request": request})
+  
+@app.get("/shadow", response_class=HTMLResponse)
+def list_page(response: Response, request: Request):
+    return template("shadow.html", {"request": request})
+
+@app.get("/inbox", response_class=HTMLResponse)
+def list_page(response: Response, request: Request):
+    return template("inbox.html", {"request": request})
+  
+@app.get("/help", response_class=HTMLResponse)
+def list_page(response: Response, request: Request):
+    return template("help.html", {"request": request})
+  
+@app.get("/proxypage", response_class=HTMLResponse)
+def list_page(response: Response, request: Request):
+    return template("game.html", {"request": request})
+
+@app.get("/url", response_class=HTMLResponse)
+def list_page(response: Response, request: Request):
+    return template("url.html", {"request": request})
+
+@app.get("/light", response_class=HTMLResponse)
+def list_page(response: Response, request: Request):
+    return template("light.html", {"request": request})
+@app.get("/sitsumon", response_class=HTMLResponse)
+def list_page(response: Response, request: Request):
+    return template("otoiawase.html", {"request": request})
+@app.get("/news", response_class=HTMLResponse)
+def list_page(response: Response, request: Request):
+    return template("news.html", {"request": request})
+@app.get("/space", response_class=HTMLResponse)
+def list_page(response: Response, request: Request):
+    return template("space.html", {"request": request})
+@app.get("/update", response_class=HTMLResponse)
+def list_page(response: Response, request: Request):
+    return template("update.html", {"request": request})
+@app.get("/others", response_class=HTMLResponse)
+def list_page(response: Response, request: Request):
+    return template("others.html", {"request": request})
+@app.get("/qanda", response_class=HTMLResponse)
+def list_page(response: Response, request: Request):
+    return template("Q&A.html", {"request": request})
+@app.get("/1v1lol", response_class=HTMLResponse)
+def list_page(response: Response, request: Request):
+    return template("1v1lol.html", {"request": request})
+@app.get("/drive", response_class=HTMLResponse)
+def list_page(response: Response, request: Request):
+    return template("drive.html", {"request": request})
+@app.get("/paper", response_class=HTMLResponse)
+def list_page(response: Response, request: Request):
+    return template("paper.html", {"request": request})
+@app.get("/snow", response_class=HTMLResponse)
+def list_page(response: Response, request: Request):
+    return template("snow.html", {"request": request})
+@app.get("/2048", response_class=HTMLResponse)
+def list_page(response: Response, request: Request):
+    return template("block.html", {"request": request})
+@app.get("/ose", response_class=HTMLResponse)
+def list_page(response: Response, request: Request):
+    return template("ose.html", {"request": request})
+@app.get("/game", response_class=HTMLResponse)
+def list_page(response: Response, request: Request):
+    return template("proxy.html", {"request": request})
+@app.get("/and", response_class=HTMLResponse)
+def list_page(response: Response, request: Request):
+    return template("android.html", {"request": request})
+@app.get("/cone", response_class=HTMLResponse)
+def list_page(response: Response, request: Request):
+    return template("cone.html", {"request": request})
+@app.get("/usa", response_class=HTMLResponse)
+def list_page(response: Response, request: Request):
+    return template("usa.html", {"request": request})
+@app.get("/chat", response_class=HTMLResponse)
+def list_page(response: Response, request: Request):
+    return template("chat.html", {"request": request})
+@app.get("/ball", response_class=HTMLResponse)
+def list_page(response: Response, request: Request):
+    return template("ball.html", {"request": request})
+@app.get("/history", response_class=HTMLResponse)
+def list_page(response: Response, request: Request):
+    return template("history.html", {"request": request})
+@app.get("/bj", response_class=HTMLResponse)
+def list_page(response: Response, request: Request):
+    return template("bj.html", {"request": request})
+@app.get("/tools", response_class=HTMLResponse)
+def list_page(response: Response, request: Request):
+    return template("tools.html", {"request": request})
+@app.get("/re", response_class=HTMLResponse)
+def list_page(response: Response, request: Request):
+    return template("re.html", {"request": request})
 
 
 @app.exception_handler(500)
 def error500(request: Request, __):
     return template("error.html", {"request": request, "context": '500 Internal Server Error'}, status_code=500)
+  
+@app.exception_handler(404)
+def error404(request: Request, __):
+    return template("error.html", {"request": request, "context": '404 Error、あれれ'}, status_code=404)
+
 
 @app.exception_handler(APITimeoutError)
 def apiWait(request: Request, exception: APITimeoutError):
